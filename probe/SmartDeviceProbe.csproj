@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>SmartDeviceProbe</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- only the device code; the probe doesn't need FanControl -->
+    <Compile Include="..\src\Hid.cs" />
+    <Compile Include="..\src\SmartDevice.cs" />
+  </ItemGroup>
+
+</Project>

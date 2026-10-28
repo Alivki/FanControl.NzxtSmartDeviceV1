@@ -1,0 +1,147 @@
+using System;
+using System.Threading;
+using FanControl.Plugins;
+
+namespace FanControl.SmartDeviceV1;
+
+/// <summary>FanControl plugin exposing the three NZXT Smart Device (V1) fan channels.</summary>
+public sealed class SmartDevicePlugin : IPlugin2
+{
+    private readonly IPluginLogger _logger;
+    private SmartDevice? _device;
+
+    public SmartDevicePlugin(IPluginLogger logger) => _logger = logger;
+
+    public string Name => "NZXT Smart Device V1";
+
+    public void Initialize()
+    {
+        try
+        {
+            _device = SmartDevice.Open(Log);
+            if (_device == null)
+            {
+                Log("device not found - is it connected, and is NZXT CAM closed?");
+                return;
+            }
+            _device.Initialize();
+
+            // status reports arrive one channel at a time; wait briefly so fan detection is known
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < deadline && _device.ReportsReceived < SmartDevice.FanCount * 2)
+                Thread.Sleep(100);
+            for (var i = 0; i < SmartDevice.FanCount; i++)
+                Log($"fan {i + 1}: mode {_device.GetMode(i)}, {_device.GetRpm(i)} rpm");
+        }
+        catch (Exception e)
+        {
+            Log($"initialize failed: {e}");
+            _device?.Dispose();
+            _device = null;
+        }
+    }
+
+    public void Load(IPluginSensorsContainer container)
+    {
+        if (_device == null)
+            return;
+        for (var i = 0; i < SmartDevice.FanCount; i++)
+        {
+            var fan = new FanSensor(_device, i);
+            container.FanSensors.Add(fan);
+            container.ControlSensors.Add(new ControlSensor(_device, i, fan.Id, Log));
+        }
+    }
+
+    public void Update()
+    {
+        // status is pushed by the device and collected on a background reader
+    }
+
+    public void Close()
+    {
+        _device?.Dispose();
+        _device = null;
+    }
+
+    private void Log(string message) => _logger.Log($"[SmartDeviceV1] {message}");
+}
+
+internal sealed class FanSensor : IPluginSensor
+{
+    private readonly SmartDevice _device;
+    private readonly int _channel;
+
+    public FanSensor(SmartDevice device, int channel)
+    {
+        _device = device;
+        _channel = channel;
+    }
+
+    public string Id => $"NZXT.SmartDeviceV1/fan{_channel + 1}/rpm";
+    public string Name => $"Smart Device Fan {_channel + 1}";
+    public float? Value { get; private set; }
+
+    public void Update() => Value = _device.GetRpm(_channel);
+}
+
+internal sealed class ControlSensor : IPluginControlSensor2
+{
+    // duty applied when FanControl releases the channel, so fans never stop unattended
+    private const int ResetDuty = 50;
+    private static readonly TimeSpan Reassert = TimeSpan.FromSeconds(10);
+
+    private readonly SmartDevice _device;
+    private readonly int _channel;
+    private readonly Action<string> _log;
+    private int _lastWritten = -1;
+    private DateTime _lastWrite;
+
+    public ControlSensor(SmartDevice device, int channel, string pairedFanSensorId, Action<string> log)
+    {
+        _device = device;
+        _channel = channel;
+        _log = log;
+        PairedFanSensorId = pairedFanSensorId;
+    }
+
+    public string Id => $"NZXT.SmartDeviceV1/fan{_channel + 1}/control";
+    public string Name => $"Smart Device Fan {_channel + 1}";
+    public string PairedFanSensorId { get; }
+    public float? Value { get; private set; }
+
+    public void Set(float val)
+    {
+        var duty = (int)Math.Round(Math.Clamp(val, 0f, 100f));
+        Value = duty;
+        // FanControl calls Set every tick; only talk to the device on change, plus a periodic re-assert
+        if (duty == _lastWritten && DateTime.UtcNow - _lastWrite < Reassert)
+            return;
+        Write(duty);
+    }
+
+    public void Reset()
+    {
+        Write(ResetDuty);
+        Value = null;
+        _lastWritten = -1;
+    }
+
+    public void Update()
+    {
+    }
+
+    private void Write(int duty)
+    {
+        try
+        {
+            _device.SetDuty(_channel, duty);
+            _lastWritten = duty;
+            _lastWrite = DateTime.UtcNow;
+        }
+        catch (Exception e)
+        {
+            _log($"fan {_channel + 1}: set {duty}% failed: {e.Message}");
+        }
+    }
+}
