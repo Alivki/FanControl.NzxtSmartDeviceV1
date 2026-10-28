@@ -13,7 +13,7 @@ namespace FanControl.SmartDeviceV1;
 ///   write [0x02, 0x4d, ch, 0x00, duty]  set fixed duty 0-100 % on channel 0-2
 ///   status report (21 bytes): rpm = b[3]&lt;&lt;8 | b[4], channel = b[15]&gt;&gt;4, mode = b[15]&amp;3 (0 none, 1 DC, 2 PWM)
 /// </summary>
-public sealed class SmartDevice : IDisposable
+public sealed class SmartDevice : IFanDevice
 {
     public const ushort VendorId = 0x1E71;
     public const ushort ProductId = 0x1714;

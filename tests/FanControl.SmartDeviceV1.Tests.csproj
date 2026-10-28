@@ -14,8 +14,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- only the parser; the tests don't need FanControl or the device -->
+    <!-- device logic only; the tests don't need FanControl or the hardware -->
     <Compile Include="..\src\StatusReport.cs" />
+    <Compile Include="..\src\IFanDevice.cs" />
+    <Compile Include="..\src\DeviceSupervisor.cs" />
     <Compile Include="..\src\SmartDevice.cs" />
     <Compile Include="..\src\Hid.cs" />
   </ItemGroup>

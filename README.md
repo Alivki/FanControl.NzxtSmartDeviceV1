@@ -16,11 +16,15 @@ Each channel shows up in FanControl as a control card ("Smart Device Fan 1–3")
 dotnet run --project probe -- status
 dotnet run --project probe -- set 1 40     # fan 1 to 40 %
 dotnet run --project probe -- set all 60
+dotnet run --project probe -- watch 20     # rpm and report rate, no changes
+dotnet test tests                          # unit tests, no hardware needed
 ```
 
 ## Notes
 
 - Only the Smart Device **V1** is supported and tested.
+- **Sleep and wake:** FanControl restarts its plugins after wake-up, so the device is set up again within seconds.
+- **Lost connection:** the device sends about 6 status reports per second. If they stop for 5 seconds or a write fails (USB reset, unplug, another app taking the device), the plugin reconnects, re-initializes and restores the last fan speeds.
 - The device protocol is documented by [liquidctl](https://github.com/liquidctl/liquidctl). This plugin is an independent C# implementation.
 
 ## Safety

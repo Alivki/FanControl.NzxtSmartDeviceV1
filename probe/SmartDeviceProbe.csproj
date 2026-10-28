@@ -13,6 +13,7 @@
     <Compile Include="..\src\Hid.cs" />
     <Compile Include="..\src\SmartDevice.cs" />
     <Compile Include="..\src\StatusReport.cs" />
+    <Compile Include="..\src\IFanDevice.cs" />
   </ItemGroup>
 
 </Project>

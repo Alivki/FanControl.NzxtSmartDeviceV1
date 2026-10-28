@@ -8,7 +8,7 @@ namespace FanControl.SmartDeviceV1;
 public sealed class SmartDevicePlugin : IPlugin2
 {
     private readonly IPluginLogger _logger;
-    private SmartDevice? _device;
+    private DeviceSupervisor? _device;
 
     public SmartDevicePlugin(IPluginLogger logger) => _logger = logger;
 
@@ -18,13 +18,15 @@ public sealed class SmartDevicePlugin : IPlugin2
     {
         try
         {
-            _device = SmartDevice.Open(Log);
-            if (_device == null)
+            var device = new DeviceSupervisor(() => SmartDevice.Open(Log), Log, SmartDevice.FanCount);
+            if (!device.IsConnected)
             {
+                // no cards for hardware that isn't there at startup
                 Log("device not found - is it connected, and is NZXT CAM closed?");
+                device.Dispose();
                 return;
             }
-            _device.Initialize();
+            _device = device;
 
             // status reports arrive one channel at a time; wait briefly so fan detection is known
             var deadline = DateTime.UtcNow.AddSeconds(3);
@@ -49,7 +51,7 @@ public sealed class SmartDevicePlugin : IPlugin2
         {
             var fan = new FanSensor(_device, i);
             container.FanSensors.Add(fan);
-            container.ControlSensors.Add(new ControlSensor(_device, i, fan.Id, Log));
+            container.ControlSensors.Add(new ControlSensor(_device, i, fan.Id));
         }
     }
 
@@ -64,10 +66,7 @@ public sealed class SmartDevicePlugin : IPlugin2
             return;
         // leave fans at a safe speed in case FanControl closes without resetting its controls
         for (var i = 0; i < SmartDevice.FanCount; i++)
-        {
-            try { _device.SetDuty(i, ControlSensor.ResetDuty); }
-            catch (Exception e) { Log($"fan {i + 1}: reset on close failed: {e.Message}"); }
-        }
+            _device.SetDuty(i, ControlSensor.ResetDuty);
         _device.Dispose();
         _device = null;
     }
@@ -77,10 +76,10 @@ public sealed class SmartDevicePlugin : IPlugin2
 
 internal sealed class FanSensor : IPluginSensor
 {
-    private readonly SmartDevice _device;
+    private readonly DeviceSupervisor _device;
     private readonly int _channel;
 
-    public FanSensor(SmartDevice device, int channel)
+    public FanSensor(DeviceSupervisor device, int channel)
     {
         _device = device;
         _channel = channel;
@@ -99,17 +98,15 @@ internal sealed class ControlSensor : IPluginControlSensor2
     public const int ResetDuty = 50;
     private static readonly TimeSpan Reassert = TimeSpan.FromSeconds(10);
 
-    private readonly SmartDevice _device;
+    private readonly DeviceSupervisor _device;
     private readonly int _channel;
-    private readonly Action<string> _log;
     private int _lastWritten = -1;
     private DateTime _lastWrite;
 
-    public ControlSensor(SmartDevice device, int channel, string pairedFanSensorId, Action<string> log)
+    public ControlSensor(DeviceSupervisor device, int channel, string pairedFanSensorId)
     {
         _device = device;
         _channel = channel;
-        _log = log;
         PairedFanSensorId = pairedFanSensorId;
     }
 
@@ -141,15 +138,9 @@ internal sealed class ControlSensor : IPluginControlSensor2
 
     private void Write(int duty)
     {
-        try
-        {
-            _device.SetDuty(_channel, duty);
-            _lastWritten = duty;
-            _lastWrite = DateTime.UtcNow;
-        }
-        catch (Exception e)
-        {
-            _log($"fan {_channel + 1}: set {duty}% failed: {e.Message}");
-        }
+        // the supervisor handles failures by reconnecting and re-applying the duty
+        _device.SetDuty(_channel, duty);
+        _lastWritten = duty;
+        _lastWrite = DateTime.UtcNow;
     }
 }

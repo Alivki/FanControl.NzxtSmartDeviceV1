@@ -5,6 +5,7 @@ using FanControl.SmartDeviceV1;
 // Test tool for the Smart Device V1, used without FanControl.
 //   SmartDeviceProbe status            show detected fans and rpm
 //   SmartDeviceProbe set <fan> <duty>  set fan 1-3 (or "all") to duty 0-100 %, then show rpm for 10 s
+//   SmartDeviceProbe watch <seconds>   show rpm and the status report rate, without changing anything
 
 int[] channels = Array.Empty<int>();
 var duty = 0;
@@ -17,6 +18,12 @@ if (args.Length > 0 && args[0] == "set")
         return 2;
     }
     channels = args[1] == "all" ? new[] { 0, 1, 2 } : new[] { int.Parse(args[1]) - 1 };
+}
+var watchSeconds = 0;
+if (args.Length > 0 && args[0] == "watch" && (args.Length != 2 || !int.TryParse(args[1], out watchSeconds) || watchSeconds is < 1 or > 3600))
+{
+    Console.WriteLine("usage: SmartDeviceProbe watch <1-3600>");
+    return 2;
 }
 
 var device = SmartDevice.Open(m => Console.WriteLine($"  {m}"));
@@ -44,6 +51,14 @@ using (device)
             Thread.Sleep(1000);
             PrintStatus(device);
         }
+    }
+
+    for (var s = 1; s <= watchSeconds; s++)
+    {
+        var before = device.ReportsReceived;
+        Thread.Sleep(1000);
+        Console.Write($"[{s,3}s] {device.ReportsReceived - before} reports/s   ");
+        PrintStatus(device);
     }
 }
 return 0;

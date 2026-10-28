@@ -1,0 +1,229 @@
+using System;
+using System.Collections.Generic;
+using FanControl.SmartDeviceV1;
+using Xunit;
+
+namespace FanControl.SmartDeviceV1.Tests;
+
+public class DeviceSupervisorTests
+{
+    private sealed class FakeDevice : IFanDevice
+    {
+        public int ReportsReceived { get; set; }
+        public int InitializeCount { get; private set; }
+        public bool Disposed { get; private set; }
+        public bool FailWrites { get; set; }
+        public Dictionary<int, int> Duties { get; } = new();
+
+        public void Initialize() => InitializeCount++;
+
+        public void SetDuty(int channel, int duty)
+        {
+            if (FailWrites)
+                throw new InvalidOperationException("device gone");
+            Duties[channel] = duty;
+        }
+
+        public int GetRpm(int channel) => 1000 + channel;
+        public int GetMode(int channel) => 2;
+        public void Dispose() => Disposed = true;
+    }
+
+    /// <summary>Supervisor with a manual clock and a queue of devices to hand out on each open.</summary>
+    private sealed class Harness
+    {
+        public DateTime Now = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        public readonly Queue<Func<IFanDevice?>> Opens = new();
+        public readonly List<string> Log = new();
+        public int OpenCalls;
+        public DeviceSupervisor Supervisor = null!;
+
+        public Harness(params FakeDevice?[] devices)
+        {
+            foreach (var d in devices)
+                Opens.Enqueue(() => d);
+        }
+
+        public Harness Start()
+        {
+            Supervisor = new DeviceSupervisor(Open, Log.Add, channelCount: 3, clock: () => Now, startTimer: false);
+            return this;
+        }
+
+        private IFanDevice? Open()
+        {
+            OpenCalls++;
+            return Opens.Count > 0 ? Opens.Dequeue()() : null;
+        }
+
+        public void Advance(double seconds)
+        {
+            Now = Now.AddSeconds(seconds);
+            Supervisor.Tick();
+        }
+    }
+
+    [Fact]
+    public void Connects_and_initializes_on_start()
+    {
+        var device = new FakeDevice();
+        var h = new Harness(device).Start();
+
+        Assert.True(h.Supervisor.IsConnected);
+        Assert.Equal(1, device.InitializeCount);
+        Assert.Equal(1001, h.Supervisor.GetRpm(1));
+    }
+
+    [Fact]
+    public void Stays_connected_while_reports_keep_arriving()
+    {
+        var device = new FakeDevice();
+        var h = new Harness(device).Start();
+
+        for (var i = 0; i < 30; i++)
+        {
+            device.ReportsReceived++;
+            h.Advance(1);
+        }
+
+        Assert.True(h.Supervisor.IsConnected);
+        Assert.Equal(1, h.OpenCalls);
+        Assert.False(device.Disposed);
+    }
+
+    [Fact]
+    public void Does_not_drop_before_reports_have_been_missing_for_the_full_window()
+    {
+        var device = new FakeDevice();
+        var h = new Harness(device, new FakeDevice()).Start();
+
+        h.Advance(DeviceSupervisor.StaleAfter.TotalSeconds - 1);
+
+        Assert.False(device.Disposed);
+        Assert.Equal(1, h.OpenCalls);
+    }
+
+    [Fact]
+    public void Reconnects_and_restores_duties_when_reports_stop()
+    {
+        var first = new FakeDevice();
+        var second = new FakeDevice();
+        var h = new Harness(first, second).Start();
+        h.Supervisor.SetDuty(1, 35);
+        h.Supervisor.SetDuty(2, 60);
+
+        // e.g. PC went to sleep: the device stops reporting
+        h.Advance(DeviceSupervisor.StaleAfter.TotalSeconds);
+
+        Assert.True(first.Disposed);
+        Assert.True(h.Supervisor.IsConnected);
+        Assert.Equal(1, second.InitializeCount);
+        Assert.Equal(35, second.Duties[1]);
+        Assert.Equal(60, second.Duties[2]);
+        Assert.False(second.Duties.ContainsKey(0));
+        Assert.Contains(h.Log, l => l.Contains("reconnected"));
+    }
+
+    [Fact]
+    public void Write_failure_drops_and_next_tick_reconnects_with_that_duty()
+    {
+        var first = new FakeDevice { FailWrites = true };
+        var second = new FakeDevice();
+        var h = new Harness(first, second).Start();
+
+        h.Supervisor.SetDuty(2, 45);
+        Assert.False(h.Supervisor.IsConnected);
+        Assert.True(first.Disposed);
+
+        h.Advance(1);
+
+        Assert.True(h.Supervisor.IsConnected);
+        Assert.Equal(45, second.Duties[2]);
+    }
+
+    [Fact]
+    public void Keeps_retrying_while_device_is_missing_and_restores_duties_set_meanwhile()
+    {
+        var device = new FakeDevice();
+        var h = new Harness(null, null, device).Start();
+        Assert.False(h.Supervisor.IsConnected);
+
+        // duty requested while disconnected is remembered, not lost
+        h.Supervisor.SetDuty(0, 40);
+
+        h.Advance(1); // before the retry interval: no new attempt
+        Assert.Equal(1, h.OpenCalls);
+
+        h.Advance(DeviceSupervisor.RetryEvery.TotalSeconds); // retry, still missing
+        Assert.False(h.Supervisor.IsConnected);
+
+        h.Advance(DeviceSupervisor.RetryEvery.TotalSeconds); // retry, device is back
+        Assert.True(h.Supervisor.IsConnected);
+        Assert.Equal(40, device.Duties[0]);
+        Assert.Equal(3, h.OpenCalls);
+        Assert.Single(h.Log, l => l.Contains("not found"));
+    }
+
+    [Fact]
+    public void Open_throwing_is_retried_later()
+    {
+        var device = new FakeDevice();
+        var h = new Harness();
+        h.Opens.Enqueue(() => throw new UnauthorizedAccessException("in use"));
+        h.Opens.Enqueue(() => device);
+        h.Start();
+
+        Assert.False(h.Supervisor.IsConnected);
+        h.Advance(DeviceSupervisor.RetryEvery.TotalSeconds);
+        Assert.True(h.Supervisor.IsConnected);
+    }
+
+    [Fact]
+    public void Initialize_failure_disposes_the_half_open_device()
+    {
+        var broken = new ThrowingInitDevice();
+        var good = new FakeDevice();
+        var h = new Harness();
+        h.Opens.Enqueue(() => broken);
+        h.Opens.Enqueue(() => good);
+        h.Start();
+
+        Assert.True(broken.Disposed);
+        h.Advance(DeviceSupervisor.RetryEvery.TotalSeconds);
+        Assert.True(h.Supervisor.IsConnected);
+    }
+
+    [Fact]
+    public void Disconnected_reads_return_zero()
+    {
+        var h = new Harness().Start();
+        Assert.Equal(0, h.Supervisor.GetRpm(0));
+        Assert.Equal(0, h.Supervisor.GetMode(0));
+        Assert.Equal(0, h.Supervisor.ReportsReceived);
+    }
+
+    [Fact]
+    public void Dispose_closes_device_and_stops_reconnecting()
+    {
+        var device = new FakeDevice();
+        var h = new Harness(device, new FakeDevice()).Start();
+
+        h.Supervisor.Dispose();
+        h.Advance(60);
+
+        Assert.True(device.Disposed);
+        Assert.False(h.Supervisor.IsConnected);
+        Assert.Equal(1, h.OpenCalls);
+    }
+
+    private sealed class ThrowingInitDevice : IFanDevice
+    {
+        public bool Disposed { get; private set; }
+        public int ReportsReceived => 0;
+        public void Initialize() => throw new InvalidOperationException("init failed");
+        public void SetDuty(int channel, int duty) { }
+        public int GetRpm(int channel) => 0;
+        public int GetMode(int channel) => 0;
+        public void Dispose() => Disposed = true;
+    }
+}
