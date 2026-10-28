@@ -6,6 +6,19 @@ using FanControl.SmartDeviceV1;
 //   SmartDeviceProbe status            show detected fans and rpm
 //   SmartDeviceProbe set <fan> <duty>  set fan 1-3 (or "all") to duty 0-100 %, then show rpm for 10 s
 
+int[] channels = Array.Empty<int>();
+var duty = 0;
+if (args.Length > 0 && args[0] == "set")
+{
+    var fanOk = args.Length == 3 && (args[1] == "all" || (int.TryParse(args[1], out var fan) && fan is >= 1 and <= SmartDevice.FanCount));
+    if (!fanOk || !int.TryParse(args[2], out duty) || duty is < 0 or > 100)
+    {
+        Console.WriteLine("usage: SmartDeviceProbe set <1-3|all> <0-100>");
+        return 2;
+    }
+    channels = args[1] == "all" ? new[] { 0, 1, 2 } : new[] { int.Parse(args[1]) - 1 };
+}
+
 var device = SmartDevice.Open(m => Console.WriteLine($"  {m}"));
 if (device == null)
 {
@@ -19,10 +32,8 @@ using (device)
     WaitForReports(device, 3);
     PrintStatus(device);
 
-    if (args.Length == 3 && args[0] == "set")
+    if (channels.Length > 0)
     {
-        var duty = int.Parse(args[2]);
-        var channels = args[1] == "all" ? new[] { 0, 1, 2 } : new[] { int.Parse(args[1]) - 1 };
         foreach (var ch in channels)
         {
             Console.WriteLine($"Setting fan {ch + 1} to {duty}%");

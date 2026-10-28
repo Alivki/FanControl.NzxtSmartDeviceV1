@@ -23,6 +23,13 @@ dotnet run --project probe -- set all 60
 - Only the Smart Device **V1** is supported and tested.
 - The device protocol is documented by [liquidctl](https://github.com/liquidctl/liquidctl). This plugin is an independent C# implementation.
 
+## Safety
+
+- FanControl runs as administrator, so this plugin does too. It only opens the Smart Device's HID interface; it has no network access and reads or writes no files.
+- The only commands sent are the three documented ones: detect, start reporting and set fixed duty (clamped to 0–100 %).
+- When FanControl closes, all three channels are set to 50 %. If FanControl crashes, fans keep their last speed until the next restart or power cycle.
+- Build from source rather than running a DLL from someone you don't know.
+
 ## License
 
 MIT

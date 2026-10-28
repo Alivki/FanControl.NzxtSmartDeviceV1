@@ -60,7 +60,15 @@ public sealed class SmartDevicePlugin : IPlugin2
 
     public void Close()
     {
-        _device?.Dispose();
+        if (_device == null)
+            return;
+        // leave fans at a safe speed in case FanControl closes without resetting its controls
+        for (var i = 0; i < SmartDevice.FanCount; i++)
+        {
+            try { _device.SetDuty(i, ControlSensor.ResetDuty); }
+            catch (Exception e) { Log($"fan {i + 1}: reset on close failed: {e.Message}"); }
+        }
+        _device.Dispose();
         _device = null;
     }
 
@@ -88,7 +96,7 @@ internal sealed class FanSensor : IPluginSensor
 internal sealed class ControlSensor : IPluginControlSensor2
 {
     // duty applied when FanControl releases the channel, so fans never stop unattended
-    private const int ResetDuty = 50;
+    public const int ResetDuty = 50;
     private static readonly TimeSpan Reassert = TimeSpan.FromSeconds(10);
 
     private readonly SmartDevice _device;

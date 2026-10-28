@@ -82,6 +82,9 @@ internal static class Hid
             for (var i = 0; SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref hidGuid, i, ref data); i++)
             {
                 SetupDiGetDeviceInterfaceDetail(set, ref data, IntPtr.Zero, 0, out var size, IntPtr.Zero);
+                // must at least hold cbSize plus a terminated path; anything else is a failed size query
+                if (size < 8 || size > 4096)
+                    continue;
                 var detail = Marshal.AllocHGlobal(size);
                 try
                 {
