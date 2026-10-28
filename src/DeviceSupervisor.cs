@@ -5,13 +5,17 @@ namespace FanControl.SmartDeviceV1;
 
 /// <summary>
 /// Keeps a working connection to the device. The device streams status reports continuously
-/// once initialized, so if they stop (sleep/wake, USB reset, unplug) or a write fails, the
-/// connection is dropped, reopened, re-initialized and the last requested duties are restored.
+/// once initialized, so if they stop (USB reset, unplug, another app taking the device) or a
+/// write fails, the connection is dropped, reopened, re-initialized and the last requested
+/// duties are restored.
+/// Logging is limited to one line when a problem starts and one when the connection has been
+/// stable again for <see cref="StableAfter"/>, so a flapping or missing device can't flood the log.
 /// </summary>
 public sealed class DeviceSupervisor : IDisposable
 {
     public static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan RetryEvery = TimeSpan.FromSeconds(2);
+    public static readonly TimeSpan StableAfter = TimeSpan.FromSeconds(30);
 
     private readonly Func<IFanDevice?> _open;
     private readonly Action<string> _log;
@@ -23,7 +27,9 @@ public sealed class DeviceSupervisor : IDisposable
     private int _lastReports;
     private DateTime _lastProgress;
     private DateTime _nextAttempt;
-    private bool _missingLogged;
+    private DateTime _connectedAt;
+    private bool _inOutage;
+    private int _suppressed;
     private bool _disposed;
 
     /// <param name="open">Opens a new connection, or returns null if the device isn't present.</param>
@@ -36,7 +42,8 @@ public sealed class DeviceSupervisor : IDisposable
         _log = log;
         _clock = clock ?? (() => DateTime.UtcNow);
         _duty = new int?[channelCount];
-        lock (_lock) Connect(isReconnect: false);
+        // the first attempt is reported by the caller, so it is not logged here
+        lock (_lock) Connect(logFailure: false);
         if (startTimer)
             _timer = new Timer(_ => Tick(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
     }
@@ -102,11 +109,19 @@ public sealed class DeviceSupervisor : IDisposable
                 }
             }
             if (_device == null && now >= _nextAttempt)
-                Connect(isReconnect: true);
+                Connect(logFailure: true);
+
+            if (_inOutage && _device != null && now - _connectedAt >= StableAfter)
+            {
+                var note = _suppressed > 0 ? $" ({_suppressed} further errors not logged)" : "";
+                _log($"connection restored and fan speeds re-applied{note}");
+                _inOutage = false;
+                _suppressed = 0;
+            }
         }
     }
 
-    private void Connect(bool isReconnect)
+    private void Connect(bool logFailure)
     {
         var now = _clock();
         IFanDevice? device = null;
@@ -115,9 +130,8 @@ public sealed class DeviceSupervisor : IDisposable
             device = _open();
             if (device == null)
             {
-                if (!_missingLogged)
-                    _log($"device not found, retrying every {RetryEvery.TotalSeconds:0} s");
-                _missingLogged = true;
+                if (logFailure)
+                    Problem($"device not found, retrying every {RetryEvery.TotalSeconds:0} s");
                 _nextAttempt = now + RetryEvery;
                 return;
             }
@@ -130,13 +144,12 @@ public sealed class DeviceSupervisor : IDisposable
             _device = device;
             _lastReports = device.ReportsReceived;
             _lastProgress = now;
-            _missingLogged = false;
-            if (isReconnect)
-                _log("reconnected and restored fan speeds");
+            _connectedAt = now;
         }
         catch (Exception e)
         {
-            _log($"connect failed: {e.Message}");
+            if (logFailure)
+                Problem($"reconnect failed: {e.Message}");
             try { device?.Dispose(); } catch { /* already broken */ }
             _nextAttempt = now + RetryEvery;
         }
@@ -144,10 +157,23 @@ public sealed class DeviceSupervisor : IDisposable
 
     private void Drop(string reason)
     {
-        _log($"connection lost ({reason}), reconnecting");
+        Problem($"connection lost ({reason}), reconnecting");
         try { _device?.Dispose(); } catch { /* already broken */ }
         _device = null;
         _nextAttempt = _clock();
+    }
+
+    /// <summary>Logs the first problem of an outage; later ones are only counted.</summary>
+    private void Problem(string message)
+    {
+        if (_inOutage)
+        {
+            _suppressed++;
+            return;
+        }
+        _log(message);
+        _inOutage = true;
+        _suppressed = 0;
     }
 
     public void Dispose()

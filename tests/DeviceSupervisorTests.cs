@@ -36,6 +36,7 @@ public class DeviceSupervisorTests
         public readonly Queue<Func<IFanDevice?>> Opens = new();
         public readonly List<string> Log = new();
         public int OpenCalls;
+        public Func<IFanDevice?>? Fallback; // used once the queue is empty; null means "not found"
         public DeviceSupervisor Supervisor = null!;
 
         public Harness(params FakeDevice?[] devices)
@@ -53,7 +54,9 @@ public class DeviceSupervisorTests
         private IFanDevice? Open()
         {
             OpenCalls++;
-            return Opens.Count > 0 ? Opens.Dequeue()() : null;
+            if (Opens.Count > 0)
+                return Opens.Dequeue()();
+            return Fallback?.Invoke();
         }
 
         public void Advance(double seconds)
@@ -121,7 +124,74 @@ public class DeviceSupervisorTests
         Assert.Equal(35, second.Duties[1]);
         Assert.Equal(60, second.Duties[2]);
         Assert.False(second.Duties.ContainsKey(0));
-        Assert.Contains(h.Log, l => l.Contains("reconnected"));
+        Assert.Single(h.Log, l => l.Contains("connection lost"));
+    }
+
+    [Fact]
+    public void Recovery_is_logged_once_the_connection_has_been_stable()
+    {
+        var second = new FakeDevice();
+        var h = new Harness(new FakeDevice(), second).Start();
+        h.Advance(DeviceSupervisor.StaleAfter.TotalSeconds); // drop + reconnect
+
+        for (var s = 1; s < DeviceSupervisor.StableAfter.TotalSeconds; s++)
+        {
+            second.ReportsReceived++;
+            h.Advance(1);
+        }
+        Assert.DoesNotContain(h.Log, l => l.Contains("restored"));
+
+        second.ReportsReceived++;
+        h.Advance(1);
+        Assert.Single(h.Log, l => l.Contains("restored"));
+        Assert.Equal(2, h.Log.Count);
+    }
+
+    [Fact]
+    public void Flapping_device_logs_one_problem_and_one_recovery()
+    {
+        var h = new Harness();
+        for (var i = 0; i < 50; i++)
+            h.Opens.Enqueue(() => new FakeDevice()); // each one goes silent right away
+        var stable = new FakeDevice();
+        h.Opens.Enqueue(() => stable);
+        h.Start();
+
+        // 50 devices that each stop reporting: drop, reconnect, drop, ...
+        for (var i = 0; i < 50; i++)
+            h.Advance(DeviceSupervisor.StaleAfter.TotalSeconds);
+        for (var s = 0; s <= DeviceSupervisor.StableAfter.TotalSeconds; s++)
+        {
+            stable.ReportsReceived++;
+            h.Advance(1);
+        }
+
+        Assert.Equal(2, h.Log.Count);
+        Assert.Contains("connection lost", h.Log[0]);
+        Assert.Contains("49 further errors not logged", h.Log[1]);
+    }
+
+    [Fact]
+    public void Persistent_failure_logs_a_single_line()
+    {
+        var h = new Harness { Fallback = () => throw new UnauthorizedAccessException("held by another app") };
+        h.Opens.Enqueue(() => new FakeDevice());
+        h.Start();
+
+        // device lost, then every reconnect attempt fails for an hour
+        for (var s = 0; s < 3600; s++)
+            h.Advance(1);
+
+        Assert.Single(h.Log);
+        Assert.Contains("connection lost", h.Log[0]);
+    }
+
+    [Fact]
+    public void Failure_at_startup_is_left_to_the_caller_to_report()
+    {
+        var h = new Harness().Start();
+        Assert.False(h.Supervisor.IsConnected);
+        Assert.Empty(h.Log);
     }
 
     [Fact]

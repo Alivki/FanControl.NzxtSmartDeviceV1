@@ -25,6 +25,7 @@ dotnet test tests                          # unit tests, no hardware needed
 - Only the Smart Device **V1** is supported and tested.
 - **Sleep and wake:** FanControl restarts its plugins after wake-up, so the device is set up again within seconds.
 - **Lost connection:** the device sends about 6 status reports per second. If they stop for 5 seconds or a write fails (USB reset, unplug, another app taking the device), the plugin reconnects, re-initializes and restores the last fan speeds.
+- **Logging:** messages go to FanControl's `log.txt`, prefixed `[SmartDeviceV1]`. One line at startup; a connection problem is logged once when it starts and once when the connection has been stable again for 30 seconds, so a missing or flapping device can't flood the log.
 - The device protocol is documented by [liquidctl](https://github.com/liquidctl/liquidctl). This plugin is an independent C# implementation.
 
 ## Safety

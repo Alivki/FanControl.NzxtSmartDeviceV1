@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using FanControl.Plugins;
 
@@ -28,12 +29,12 @@ public sealed class SmartDevicePlugin : IPlugin2
             }
             _device = device;
 
-            // status reports arrive one channel at a time; wait briefly so fan detection is known
+            // status reports arrive one channel at a time; wait briefly so the first rpm values are in
             var deadline = DateTime.UtcNow.AddSeconds(3);
             while (DateTime.UtcNow < deadline && _device.ReportsReceived < SmartDevice.FanCount * 2)
                 Thread.Sleep(100);
-            for (var i = 0; i < SmartDevice.FanCount; i++)
-                Log($"fan {i + 1}: mode {_device.GetMode(i)}, {_device.GetRpm(i)} rpm");
+            var rpms = string.Join(", ", Enumerable.Range(0, SmartDevice.FanCount).Select(i => $"fan {i + 1} {_device.GetRpm(i)} rpm"));
+            Log($"connected ({rpms})");
         }
         catch (Exception e)
         {

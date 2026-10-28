@@ -30,6 +30,7 @@ public sealed class SmartDevice : IFanDevice
     private readonly Action<string> _log;
     private readonly Task _reader;
     private int _reportsReceived;
+    private bool _readErrorLogged;
 
     private SmartDevice(FileStream stream, int inputLength, int outputLength, Action<string> log)
     {
@@ -42,28 +43,34 @@ public sealed class SmartDevice : IFanDevice
 
     public int ReportsReceived => Volatile.Read(ref _reportsReceived);
 
-    /// <summary>Opens the first Smart Device V1 found, or returns null.</summary>
+    /// <summary>
+    /// Opens the first Smart Device V1 found. Returns null if none is present; throws if one is
+    /// present but can't be opened, so the caller decides what to log.
+    /// </summary>
+    /// <param name="log">Receives read errors from the background reader (at most one per connection).</param>
     public static SmartDevice? Open(Action<string> log)
     {
+        Exception? lastError = null;
         foreach (var path in Hid.FindPaths(VendorId, ProductId))
         {
             try
             {
                 var handle = Hid.Open(path, out var inLen, out var outLen);
-                if (inLen < 16 || outLen < 5)
+                if (inLen < StatusReport.MinLength || outLen < 5)
                 {
                     handle.Dispose();
                     continue;
                 }
-                log($"opened {path} (in {inLen} B, out {outLen} B)");
                 var stream = new FileStream(handle, FileAccess.ReadWrite, 1, isAsync: true);
                 return new SmartDevice(stream, inLen, outLen, log);
             }
             catch (Exception e)
             {
-                log($"could not open {path}: {e.Message}");
+                lastError = e;
             }
         }
+        if (lastError != null)
+            throw lastError;
         return null;
     }
 
@@ -132,7 +139,12 @@ public sealed class SmartDevice : IFanDevice
             }
             catch (Exception e)
             {
-                _log($"read error: {e.Message}");
+                if (_cts.IsCancellationRequested)
+                    break; // handle closed during Dispose, not a real error
+                // the supervisor notices the missing reports and reconnects; one line is enough
+                if (!_readErrorLogged)
+                    _log($"read error: {e.Message}");
+                _readErrorLogged = true;
                 try { await Task.Delay(1000, _cts.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
             }
