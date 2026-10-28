@@ -12,6 +12,7 @@
     <!-- only the device code; the probe doesn't need FanControl -->
     <Compile Include="..\src\Hid.cs" />
     <Compile Include="..\src\SmartDevice.cs" />
+    <Compile Include="..\src\StatusReport.cs" />
   </ItemGroup>
 
 </Project>

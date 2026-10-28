@@ -111,15 +111,18 @@ public sealed class SmartDevice : IDisposable
             try
             {
                 var read = await _stream.ReadAsync(buffer.AsMemory(0, _inputLength), _cts.Token).ConfigureAwait(false);
-                if (read < 16)
+                if (read == 0)
+                {
+                    // handle no longer delivers data (device gone); don't spin
+                    await Task.Delay(1000, _cts.Token).ConfigureAwait(false);
                     continue;
-                var channel = buffer[15] >> 4;
-                if (channel >= FanCount)
+                }
+                if (!StatusReport.TryParse(buffer.AsSpan(0, read), out var status))
                     continue;
                 lock (_statusLock)
                 {
-                    _rpm[channel] = buffer[3] << 8 | buffer[4];
-                    _mode[channel] = buffer[15] & 0x3;
+                    _rpm[status.Channel] = status.Rpm;
+                    _mode[status.Channel] = status.Mode;
                 }
                 Interlocked.Increment(ref _reportsReceived);
             }
